@@ -232,8 +232,8 @@ if __name__ == "__main__":
                    ncol=2, frameon=False, fontsize=11)
         
         plt.title(f'Football Manager Assessment Matrix ({args.season} Premier League)', fontsize=18, weight='bold', pad=20)
-        plt.xlabel('Fair Index (Wage Efficiency)', fontsize=12)
-        plt.ylabel('Organic Growth (€ Millions)', fontsize=12)
+        plt.xlabel('Fair Index (Wage Efficiency)\n<-- Underperforming Budget | Overperforming Budget -->', fontsize=12, labelpad=10)
+        plt.ylabel('Organic Growth (€ Millions)\n<-- Value depreciation | Value Creation -->', fontsize=12, labelpad=10)
         plt.xlim(x_min, x_max); plt.ylim(y_min, y_max)
         plt.tight_layout()
         
