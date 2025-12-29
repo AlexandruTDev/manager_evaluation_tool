@@ -1,180 +1,157 @@
 import pandas as pd
 import os
 
-# --- CONFIGURATION ---
-SEASONS = ['23-24', '24-25']
-BASE_DIR = os.path.join("data", "raw")
-FILE_NAME = "player_minutes.csv"
-
-# --- AGE DEFINITIONS ---
-# Defined as (Min_Age, Max_Age) inclusive
+# --- CONSTANTS ---
 AGE_RANGES = {
     "Prospects":  (0, 20),
     "Developing": (21, 23),
     "Prime":      (24, 29),
     "Veterans":   (30, 100)
 }
+ORDERED_GROUPS = ["Prospects", "Developing", "Prime", "Veterans"]
 
+# --- DATA LOADING ---
+def load_data(path):
+    if not os.path.exists(path):
+        return None
+    try:
+        df = pd.read_csv(path)
+        return df
+    except Exception as e:
+        print(f"Error loading data file: {e}")
+        return None
+
+def load_manager_map(path):
+    """
+    Loads manager names using a broad lookup strategy.
+    Returns: { 'Any_Team_Name_Variant': 'Manager Name' }
+    """
+    if not os.path.exists(path):
+        return {}
+    try:
+        df = pd.read_csv(path)
+        manager_map = {}
+        
+        # We map EVERY name variant to the manager
+        if 'Manager' in df.columns:
+            for col in ['Common_Name', 'FBref_Name', 'TM_Name']:
+                if col in df.columns:
+                    # Create dictionary: {Variant: Manager}
+                    # dropna() ensures we don't map NaNs
+                    subset = df.dropna(subset=[col, 'Manager'])
+                    manager_map.update(dict(zip(subset[col], subset['Manager'])))
+                    
+        return manager_map
+    except Exception as e:
+        print(f"Error loading manager map: {e}")
+        return {}
+
+def load_team_mapping(path):
+    """
+    Creates a robust Master Map.
+    Input: Any known name variant (FBref, TM, Common).
+    Output: The standardized 'Common_Name' used in the Matrix.
+    """
+    if not os.path.exists(path):
+        return {}
+    try:
+        df = pd.read_csv(path)
+        master_map = {}
+        
+        # Ensure we have the target column
+        if 'Common_Name' not in df.columns:
+            return {}
+
+        # Loop through rows and map ALL variants to the Common_Name
+        for _, row in df.iterrows():
+            target_name = row['Common_Name']
+            
+            # Map the Common Name to itself (Identity)
+            master_map[target_name] = target_name
+            
+            # Map FBref Name -> Common Name
+            if 'FBref_Name' in df.columns and pd.notna(row['FBref_Name']):
+                master_map[row['FBref_Name']] = target_name
+                
+            # Map TM Name -> Common Name
+            if 'TM_Name' in df.columns and pd.notna(row['TM_Name']):
+                master_map[row['TM_Name']] = target_name
+
+        return master_map
+    except Exception as e:
+        print(f"Error loading team mapping: {e}")
+        return {}
+
+# --- CORE LOGIC ---
 def get_age_group(age):
     for group, (min_a, max_a) in AGE_RANGES.items():
         if min_a <= age <= max_a:
             return group
     return "Unknown"
 
-def format_availability_share(group_df):
-    """
-    Returns string: "Prospects (25.0%), Prime (50.0%)"
-    Calculates the % of HEADCOUNT (Inventory) each age group represents.
-    """
-    total_players = len(group_df)
-    
-    if total_players == 0:
-        return "No Players"
-    
-    # 1. Assign Group Names to the slice
-    group_df = group_df.copy()
-    group_df['Group_Name'] = group_df['Age'].apply(get_age_group)
-    
-    # 2. Count players per group
-    counts = group_df['Group_Name'].value_counts()
-    
-    # 3. Build String (Ordered)
-    segments = []
-    order = ["Prospects", "Developing", "Prime", "Veterans"]
-    
-    for group_name in order:
-        count = counts.get(group_name, 0)
-        if count > 0:
-            pct = (count / total_players) * 100
-            segments.append(f"{group_name} ({pct:.1f}%)")
-            
-    return ", ".join(segments)
-
-def format_minutes_share(group_df):
-    """
-    Returns string: "Prospects (17.2%), Prime (70.1%)"
-    """
-    total_pos_minutes = group_df['Min'].sum()
-    
-    if total_pos_minutes == 0:
-        return "No Minutes Played"
-    
-    # Group by Age Group and sum minutes
-    # We map the age to the group name first
-    group_df = group_df.copy() # Avoid SettingWithCopy warning
-    group_df['Group_Name'] = group_df['Age'].apply(get_age_group)
-    
-    stats = group_df.groupby('Group_Name')['Min'].sum()
-    
-    # Build the string in a specific order for consistency
-    segments = []
-    # We iterate through the specific order to keep the output clean
-    order = ["Prospects", "Developing", "Prime", "Veterans"]
-    
-    for group_name in order:
-        minutes = stats.get(group_name, 0)
-        if minutes > 0:
-            pct = (minutes / total_pos_minutes) * 100
-            segments.append(f"{group_name} ({pct:.1f}%)")
-            
-    return ", ".join(segments)
-
 def apply_squad_filters(df):
     """
     Applies the 'Ghost Cleanse' and 'Active Backup' logic.
+    Returns the clean DataFrame.
     """
-    initial_count = len(df)
-    
+    # 1. Standardize Columns
     if 'unSub' not in df.columns: df['unSub'] = 0
-    
     df['unSub'] = df['unSub'].fillna(0).astype(int)
     df['MP'] = df['MP'].fillna(0).astype(int)
     df['Min'] = df['Min'].fillna(0).astype(int)
 
+    # 2. Calculate Total Squad Inclusions
     df['Squad_Apps'] = df['MP'] + df['unSub']
 
-    # Filter Logic
+    # 3. Filter Logic
+    # Senior (>21): Keep if they made the squad at least once
     is_senior = (df['Age'] >= 21) & (df['Squad_Apps'] > 0)
+    
+    # Prospect (<21): Keep if Played >= 3 OR Bench >= 5
     is_valid_prospect = (df['Age'] < 21) & ( (df['MP'] >= 3) | (df['Squad_Apps'] >= 5) )
     
     keep_mask = is_senior | is_valid_prospect
-    df_filtered = df[keep_mask].copy()
+    return df[keep_mask].copy()
 
-    dropped_count = initial_count - len(df_filtered)
-    print(f"   >> Filters applied: Dropped {dropped_count} 'Ghost' players. Final Squad Size: {len(df_filtered)}")
+def calculate_trust_metrics(df):
+    """
+    Calculates Inventory % vs Minutes % for each Age Group.
+    Returns a dataframe ready for plotting.
+    """
+    total_players = len(df)
+    total_minutes = df['Min'].sum()
     
-    return df_filtered
+    data = []
+    
+    # Assign Age Groups if not already present
+    if 'Age_Group' not in df.columns:
+        df['Age_Group'] = df['Age'].apply(get_age_group)
 
-def process_squad_breakdown(file_path):
-    if not os.path.exists(file_path):
-        print(f"⚠️ File not found: {file_path}")
-        return
-
-    print(f"\n📂 Loading: {file_path}")
-    try:
-        df = pd.read_csv(file_path)
-    except Exception as e:
-        print(f"❌ Error reading CSV: {e}")
-        return
-
-    required_cols = {'Squad', 'Age', 'Pos', 'MP'}
-    if not required_cols.issubset(df.columns):
-        print(f"❌ Error: Missing required columns.")
-        return
-
-    # --- APPLY FILTERS ---
-    df = apply_squad_filters(df)
-
-    # Clean Position
-    df['Pos_Clean'] = df['Pos'].astype(str).apply(lambda x: x.split(',')[0].strip())
-    squads = sorted(df['Squad'].dropna().unique())
-
-    for squad in squads:
-        print(f"\n{'='*10} {squad.upper()} {'='*10}")
-        squad_df = df[df['Squad'] == squad]
-        
-        if squad_df.empty:
-            continue
-
-        # --- PREPARE COLUMNS ---
-        # 1. Age Counts (Left)
-        age_counts = squad_df['Age'].value_counts().sort_index()
-        left_lines = [f"Age {age}: {count}" for age, count in age_counts.items()]
-
-        # 2. Position Data (Middle & Right)
-        positions = sorted(squad_df['Pos_Clean'].unique())
-        mid_lines = []  # Positional Depth
-        right_lines = [] # Minutes Share
-        
-        for pos in positions:
-            pos_group = squad_df[squad_df['Pos_Clean'] == pos]
+    grouped = df.groupby('Age_Group')
+    
+    for group in ORDERED_GROUPS:
+        if group in grouped.groups:
+            group_df = grouped.get_group(group)
+            count = len(group_df)
+            minutes = group_df['Min'].sum()
+        else:
+            count = 0
+            minutes = 0
             
-            # Format Depth: "CB: 3 A19..."
-            depth_str = f"{pos}: {format_availability_share(pos_group)}"
-            mid_lines.append(depth_str)
-            
-            # Format Minutes: "Prospects (10%)..."
-            min_str = format_minutes_share(pos_group)
-            right_lines.append(min_str)
-
-        # --- PRINT TABLE ---
-        max_rows = max(len(left_lines), len(mid_lines))
+        inv_pct = (count / total_players * 100) if total_players > 0 else 0
+        min_pct = (minutes / total_minutes * 100) if total_minutes > 0 else 0
         
-        # Header
-        # We adjust width: Age (15) | Depth (35) | Minutes (Rest)
-        print(f"{'AGE COUNT':<15} | {'POSITIONAL DEPTH':<40} | {'MINUTES SHARE (By Age Group)'}")
-        print("-" * 110)
-
-        for i in range(max_rows):
-            l_col = left_lines[i] if i < len(left_lines) else ""
-            m_col = mid_lines[i] if i < len(mid_lines) else ""
-            r_col = right_lines[i] if i < len(right_lines) else ""
-            
-            print(f"{l_col:<15} | {m_col:<40} | {r_col}")
-
-# --- EXECUTION ---
-if __name__ == "__main__":
-    for season in SEASONS:
-        full_path = os.path.join(BASE_DIR, season, FILE_NAME)
-        print(f"\nProcessing Season: {season}")
-        process_squad_breakdown(full_path)
+        data.append({
+            "Age Group": group, 
+            "Metric": "Squad Depth (Available Players)", 
+            "Percentage": inv_pct, 
+            "Raw Value": count
+        })
+        data.append({
+            "Age Group": group, 
+            "Metric": "Minutes Played (Players Utilization)", 
+            "Percentage": min_pct, 
+            "Raw Value": minutes
+        })
+        
+    return pd.DataFrame(data)
