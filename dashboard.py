@@ -185,7 +185,7 @@ if st.session_state.current_view == "📊 League Matrix":
             st.dataframe(df_matrix[['Manager', 'Squad_Common', 'Fair_Index', 'Organic_Growth_M', 'Display_Category']].sort_values(by='Organic_Growth_M', ascending=False))
 
 # ==============================================================================
-# VIEW 2: DEEP DIVE
+# VIEW 2: DEEP DIVE (Refactored)
 # ==============================================================================
 elif st.session_state.current_view == "🕵️ Manager Deep Dive":
     df_clean = ap.apply_squad_filters(df_players)
@@ -211,6 +211,7 @@ elif st.session_state.current_view == "🕵️ Manager Deep Dive":
     st.markdown("---")
     st.markdown(f"### {squad_common}")
     
+    # --- GLOBAL CONTEXT (Visible on both tabs) ---
     if active_managers:
         cols = st.columns(len(active_managers))
         for idx, mgr in enumerate(active_managers):
@@ -243,55 +244,66 @@ elif st.session_state.current_view == "🕵️ Manager Deep Dive":
     else:
         st.title(manager_map.get(selected_squad, "Unknown"))
 
-    st.markdown("#### Matrix Performance")
-    c1, c2 = st.columns(2)
-    with c1: st.metric("Quadrant", mgr_stats.iloc[0]['Quadrant'] if not mgr_stats.empty else "N/A")
-    with c2: st.metric("Wage Efficiency", f"{mgr_stats.iloc[0]['Fair_Index']:+.0f}" if not mgr_stats.empty else "N/A")
+    # --- SUB-TABS ---
+    tab_perf, tab_tactics = st.tabs(["🏆 Squad & Performance", "🧠 Tactical DNA"])
 
-    st.markdown("---")
-    # Restored Detailed Age Legend
-    cols = st.columns(4)
-    definitions = [
-        ("Prospects", "< 21", "Future Assets"),
-        ("Developing", "21 - 23", "High Value"),
-        ("Prime", "24 - 29", "Performance Core"),
-        ("Veterans", "30+", "Leadership")
-    ]
-    for col, (name, age, desc) in zip(cols, definitions):
-        col.markdown(f"**{name}**")
-        col.caption(f"Age: {age}")
-        col.caption(f"Role: *{desc}*")
-    st.markdown("---")
-    
-    st.markdown("### The Trust Gap Analysis")
-    
-    df_viz = df_clean[df_clean['Squad'] == selected_squad]
-    if selected_pos != "All": df_viz = df_viz[df_viz['Pos_Simple'] == selected_pos]
-    metrics = ap.calculate_trust_metrics(df_viz)
+    # --- SUB-TAB 1: EXISTING PERFORMANCE LOGIC ---
+    with tab_perf:
+        st.markdown("#### Matrix Performance")
+        c1, c2 = st.columns(2)
+        with c1: st.metric("Quadrant", mgr_stats.iloc[0]['Quadrant'] if not mgr_stats.empty else "N/A")
+        with c2: st.metric("Wage Efficiency", f"{mgr_stats.iloc[0]['Fair_Index']:+.0f}" if not mgr_stats.empty else "N/A")
 
-    if not metrics.empty:
-        gap = metrics.pivot(index="Age Group", columns="Metric", values="Percentage").reset_index()
-        gap["Trust Gap"] = gap["Minutes Played (Players Utilization)"] - gap["Squad Depth (Available Players)"]
+        st.markdown("---")
+        # Restored Detailed Age Legend
+        cols = st.columns(4)
+        definitions = [
+            ("Prospects", "< 21", "Future Assets"),
+            ("Developing", "21 - 23", "High Value"),
+            ("Prime", "24 - 29", "Performance Core"),
+            ("Veterans", "30+", "Leadership")
+        ]
+        for col, (name, age, desc) in zip(cols, definitions):
+            col.markdown(f"**{name}**")
+            col.caption(f"Age: {age}")
+            col.caption(f"Role: *{desc}*")
+        st.markdown("---")
         
-        main_mgr = sorted(active_managers, key=lambda x: x['Share'], reverse=True)[0]['Manager'].split(' ')[-1] if active_managers else "Manager"
+        st.markdown("### The Trust Gap Analysis")
         
-        fig = px.bar(
-            gap, x="Trust Gap", y="Age Group", orientation='h', 
-            text_auto='.1f', # <--- Formats hover
-            color="Trust Gap", color_continuous_scale="RdYlGn", 
-            range_color=[-20,20], title=f"Who does {main_mgr} trust?"
-        )
-        
-        # FIX: Explicit Text Template for Bar Labels
-        fig.update_traces(texttemplate='%{x:.1f}%', textposition='auto')
-        
-        fig.add_vline(x=0, line_dash="dash", line_color="black")
-        fig.update_layout(coloraxis_showscale=False)
-        st.plotly_chart(fig, use_container_width=True)
-        
-        with st.expander("Available Players vs Minutes"):
-            scope = f"Scope: **{selected_pos}**" if selected_pos != "All" else "Scope: **Full Squad**"
-            st.markdown(f"{scope} | Team: **{selected_squad}**")
-            fig_bar = px.bar(metrics, x="Age Group", y="Percentage", color="Metric", barmode="group", text_auto='.1f', height=350)
-            st.plotly_chart(fig_bar, use_container_width=True)
-    else: st.warning("No data.")
+        df_viz = df_clean[df_clean['Squad'] == selected_squad]
+        if selected_pos != "All": df_viz = df_viz[df_viz['Pos_Simple'] == selected_pos]
+        metrics = ap.calculate_trust_metrics(df_viz)
+
+        if not metrics.empty:
+            gap = metrics.pivot(index="Age Group", columns="Metric", values="Percentage").reset_index()
+            gap["Trust Gap"] = gap["Minutes Played (Players Utilization)"] - gap["Squad Depth (Available Players)"]
+            
+            main_mgr = sorted(active_managers, key=lambda x: x['Share'], reverse=True)[0]['Manager'].split(' ')[-1] if active_managers else "Manager"
+            
+            fig = px.bar(
+                gap, x="Trust Gap", y="Age Group", orientation='h', 
+                text_auto='.1f', 
+                color="Trust Gap", color_continuous_scale="RdYlGn", 
+                range_color=[-20,20], title=f"Who does {main_mgr} trust?"
+            )
+            
+            fig.update_traces(texttemplate='%{x:.1f}%', textposition='auto')
+            fig.add_vline(x=0, line_dash="dash", line_color="black")
+            fig.update_layout(coloraxis_showscale=False)
+            st.plotly_chart(fig, use_container_width=True)
+            
+            with st.expander("Available Players vs Minutes"):
+                scope = f"Scope: **{selected_pos}**" if selected_pos != "All" else "Scope: **Full Squad**"
+                st.markdown(f"{scope} | Team: **{selected_squad}**")
+                fig_bar = px.bar(metrics, x="Age Group", y="Percentage", color="Metric", barmode="group", text_auto='.1f', height=350)
+                st.plotly_chart(fig_bar, use_container_width=True)
+        else: st.warning("No data.")
+
+    # --- SUB-TAB 2: TACTICAL DNA (Placeholder) ---
+    with tab_tactics:
+        st.info("Tactical Analysis Module loading...")
+        # This is where we will insert the charts for:
+        # 1. Field Tilt (Pressing Height)
+        # 2. Passing Style (Short vs Long)
+        # 3. Defensive Proactivity
