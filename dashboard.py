@@ -5,6 +5,7 @@ import pandas as pd
 import os
 import age_parser as ap
 import manager_matrix as mm
+import dashboard_tactics as dt
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="Football Manager Analytics", layout="wide")
@@ -70,7 +71,7 @@ if df_players is None or df_matrix is None:
     st.stop()
 
 # --- NAVIGATION ---
-view_options = ["📊 League Matrix", "🕵️ Manager Deep Dive"]
+view_options = ["📊 League Matrix", "🕵️ Manager Profile"]
 def update_view_state(): st.session_state.current_view = st.session_state.nav_radio
 try: radio_index = view_options.index(st.session_state.current_view)
 except: radio_index = 0
@@ -151,21 +152,7 @@ if st.session_state.current_view == "📊 League Matrix":
         fig.update_xaxes(range=[x_min, x_max])
         fig.update_yaxes(range=[y_min, y_max])
 
-        # Click Event
-        event = st.plotly_chart(fig, use_container_width=True, on_select="rerun", selection_mode="points", key="matrix_chart")
-        if event and event.get("selection") and event["selection"]["points"]:
-            try:
-                clicked_squad = event["selection"]["points"][0]["customdata"][0]
-                found_raw = None
-                available_squads = ap.apply_squad_filters(df_players)['Squad'].unique()
-                for squad in available_squads:
-                    if team_map.get(squad, squad) == clicked_squad:
-                        found_raw = squad; break
-                if found_raw:
-                    st.session_state.selected_squad_key = found_raw
-                    st.session_state.current_view = "🕵️ Manager Deep Dive"
-                    st.rerun()
-            except: pass
+        st.plotly_chart(fig, use_container_width=True, key="matrix_chart")
         
         # Legend Description Block (Restored)
         st.markdown("""
@@ -185,125 +172,221 @@ if st.session_state.current_view == "📊 League Matrix":
             st.dataframe(df_matrix[['Manager', 'Squad_Common', 'Fair_Index', 'Organic_Growth_M', 'Display_Category']].sort_values(by='Organic_Growth_M', ascending=False))
 
 # ==============================================================================
-# VIEW 2: DEEP DIVE (Refactored)
+# VIEW 2: DEEP DIVE 
 # ==============================================================================
-elif st.session_state.current_view == "🕵️ Manager Deep Dive":
-    df_clean = ap.apply_squad_filters(df_players)
-    squads = sorted(df_clean['Squad'].dropna().unique())
-    default_index = 0
-    if st.session_state.selected_squad_key in squads:
-        default_index = squads.index(st.session_state.selected_squad_key)
-        if st.button("← Back"):
-            st.session_state.current_view = "📊 League Matrix"; st.rerun()
-
-    c1, c2 = st.columns(2)
-    def update_sq(): st.session_state.selected_squad_key = st.session_state.squad_selector
-    with c1: selected_squad = st.selectbox("Squad", squads, index=default_index, key="squad_selector", on_change=update_sq)
+elif st.session_state.current_view == "🕵️ Manager Profile":
     
-    df_clean['Age_Group'] = df_clean['Age'].apply(ap.get_age_group)
-    df_clean['Pos_Simple'] = df_clean['Pos'].astype(str).apply(lambda x: x.split(',')[0].strip())
-    with c2: selected_pos = st.selectbox("Position", ["All"] + sorted(df_clean['Pos_Simple'].unique()))
-
-    squad_common = team_map.get(selected_squad, selected_squad)
-    active_managers = ap.get_active_managers(df_tenure, squad_common, selected_season, match_threshold_pct=0.25)
-    mgr_stats = df_matrix[df_matrix['Squad_Common'] == squad_common]
-    
-    st.markdown("---")
-    st.markdown(f"### {squad_common}")
-    
-    # --- GLOBAL CONTEXT (Visible on both tabs) ---
-    if active_managers:
-        cols = st.columns(len(active_managers))
-        for idx, mgr in enumerate(active_managers):
-            with cols[idx]:
-                with st.container(border=True):
-                    st.markdown(f"#### {mgr['Manager']}")
-                    st.caption(f"**{mgr['Phase']}** • {mgr['Dates']}")
-                    st.progress(mgr['Share']/100, text=f"Season Share: {mgr['Share']:.1f}%")
-                    
-                    st.markdown(f"""
-                        <div style="display: flex; justify-content: space-between; margin-top: 10px;">
-                            <div style="text-align:center;">
-                                <span class="stat-badge badge-w">{mgr['W_Pct']:.0f}%</span><br>
-                                <span class="small-label">Win</span>
-                            </div>
-                            <div style="text-align:center;">
-                                <span class="stat-badge badge-d">{mgr['D_Pct']:.0f}%</span><br>
-                                <span class="small-label">Draw</span>
-                            </div>
-                            <div style="text-align:center;">
-                                <span class="stat-badge badge-l">{mgr['L_Pct']:.0f}%</span><br>
-                                <span class="small-label">Loss</span>
-                            </div>
-                            <div style="text-align:center;">
-                                <span class="stat-badge badge-ppm">{mgr['PPM']:.2f}</span><br>
-                                <span class="small-label">Points/Match</span>
-                            </div>
-                        </div>
-                    """, unsafe_allow_html=True)
+    # Step 1: Get Unique Managers from TENURE file
+    if df_tenure is not None and not df_tenure.empty:
+        # Filter: Only managers with >= 5 matches (~13% of a season)
+        relevant_tenures = df_tenure[df_tenure['Matches'] >= 5]
+        
+        if relevant_tenures.empty:
+            st.warning("No managers found with sufficient matches (>5) in tenure data.")
+            st.stop()
+            
+        available_managers = sorted(relevant_tenures['Manager'].unique())
     else:
-        st.title(manager_map.get(selected_squad, "Unknown"))
+        st.error("Manager Tenure data missing.")
+        st.stop()
+    
+    c1, c2 = st.columns([1, 2])
+    
+    with c1:
+        # Manager Dropdown
+        selected_manager = st.selectbox("Select Manager", available_managers)
+        
+        # Find associated squads
+        mgr_tenures = df_tenure[df_tenure['Manager'] == selected_manager]
+        associated_squads = mgr_tenures['Squad'].unique()
+        
+        # Handle Multi-Club Managers
+        if len(associated_squads) > 1:
+            selected_squad_common = st.selectbox("Select Club (Multiple Tenures)", associated_squads)
+        elif len(associated_squads) == 1:
+            selected_squad_common = associated_squads[0]
+            # [REMOVED]: The caption "Club: ..." is gone.
+        else:
+            selected_squad_common = None
+            st.warning("Manager found but no club linked in tenure file.")
 
-    # --- SUB-TABS ---
-    tab_perf, tab_tactics = st.tabs(["🏆 Squad & Performance", "🧠 Tactical DNA"])
-
-    # --- SUB-TAB 1: EXISTING PERFORMANCE LOGIC ---
-    with tab_perf:
-        st.markdown("#### Matrix Performance")
-        c1, c2 = st.columns(2)
-        with c1: st.metric("Quadrant", mgr_stats.iloc[0]['Quadrant'] if not mgr_stats.empty else "N/A")
-        with c2: st.metric("Wage Efficiency", f"{mgr_stats.iloc[0]['Fair_Index']:+.0f}" if not mgr_stats.empty else "N/A")
+    if selected_squad_common:
+        # Get the specific tenure record
+        current_tenure = mgr_tenures[mgr_tenures['Squad'] == selected_squad_common].iloc[0]
+        
+        # Link to Matrix Data
+        matrix_squad_row = df_matrix[df_matrix['Squad_Common'] == selected_squad_common]
+        
+        quadrant = "N/A"
+        fair_index = "N/A"
+        
+        if not matrix_squad_row.empty:
+            row = matrix_squad_row.iloc[0]
+            quadrant = row['Quadrant']
+            fair_index = row['Fair_Index']
 
         st.markdown("---")
-        # Restored Detailed Age Legend
-        cols = st.columns(4)
-        definitions = [
-            ("Prospects", "< 21", "Future Assets"),
-            ("Developing", "21 - 23", "High Value"),
-            ("Prime", "24 - 29", "Performance Core"),
-            ("Veterans", "30+", "Leadership")
-        ]
-        for col, (name, age, desc) in zip(cols, definitions):
-            col.markdown(f"**{name}**")
-            col.caption(f"Age: {age}")
-            col.caption(f"Role: *{desc}*")
-        st.markdown("---")
         
-        st.markdown("### The Trust Gap Analysis")
-        
-        df_viz = df_clean[df_clean['Squad'] == selected_squad]
-        if selected_pos != "All": df_viz = df_viz[df_viz['Pos_Simple'] == selected_pos]
-        metrics = ap.calculate_trust_metrics(df_viz)
+        # --- ID CARD SECTION ---
+        with st.container(border=True):
+            # Layout: Name/Club | Stats
+            c_head_1, c_head_2 = st.columns([1.5, 2.5])
+            
+            with c_head_1:
+                st.markdown(f"## {selected_manager}")
+                st.markdown(f"<h4 style='color: #2c3e50; margin-top: -15px; margin-bottom: 5px;'>🛡️ {selected_squad_common}</h4>", unsafe_allow_html=True)
+                
+                # [UPDATED]: Robust Date-Based Phase Logic
+                try:
+                    # 1. Determine Season Start Year from folder name (e.g. "23-24" -> 2023)
+                    # Adjust this split logic if your folder names differ (e.g. "2023-2024")
+                    if "-" in selected_season:
+                        parts = selected_season.split("-")
+                        if len(parts[0]) == 2:
+                            season_start_year = int("20" + parts[0])
+                        else:
+                            season_start_year = int(parts[0])
+                    else:
+                        season_start_year = 2023 # Fallback
+                        
+                    # Define Season Boundaries
+                    season_start_date = pd.Timestamp(year=season_start_year, month=8, day=15) # Mid-August
+                    season_end_date = pd.Timestamp(year=season_start_year + 1, month=5, day=1) # May 1st
+                    
+                    # 2. Parse Tenure Dates
+                    start_str = current_tenure.get('Start_Date', '')
+                    end_str = current_tenure.get('End_Date', '')
+                    
+                    # Clean strings (handle typos or formats)
+                    tenure_start = pd.to_datetime(start_str, dayfirst=True, errors='coerce')
+                    
+                    # Logic Tree
+                    if pd.isna(tenure_start):
+                        phase_label = "Unknown Phase"
+                    elif tenure_start < season_start_date:
+                        # They started BEFORE the season cutoff (Incumbent)
+                        
+                        # Did they finish the season?
+                        is_finished = False
+                        if "Present" in end_str:
+                            is_finished = True
+                        else:
+                            tenure_end = pd.to_datetime(end_str, dayfirst=True, errors='coerce')
+                            if pd.notna(tenure_end) and tenure_end > season_end_date:
+                                is_finished = True
+                                
+                        if is_finished:
+                            phase_label = "Full Season Charge"
+                        else:
+                            phase_label = "Dismissed Before Season End"
+                    else:
+                        # They started AFTER season began
+                        phase_label = "Mid-Season Takeover"
+                        
+                except Exception as e:
+                    phase_label = "Phase Calculation Error"
+                    # print(e) # Debug if needed
 
-        if not metrics.empty:
-            gap = metrics.pivot(index="Age Group", columns="Metric", values="Percentage").reset_index()
-            gap["Trust Gap"] = gap["Minutes Played (Players Utilization)"] - gap["Squad Depth (Available Players)"]
+                st.caption(f"Phase: **{phase_label}**")
             
-            main_mgr = sorted(active_managers, key=lambda x: x['Share'], reverse=True)[0]['Manager'].split(' ')[-1] if active_managers else "Manager"
-            
-            fig = px.bar(
-                gap, x="Trust Gap", y="Age Group", orientation='h', 
-                text_auto='.1f', 
-                color="Trust Gap", color_continuous_scale="RdYlGn", 
-                range_color=[-20,20], title=f"Who does {main_mgr} trust?"
-            )
-            
-            fig.update_traces(texttemplate='%{x:.1f}%', textposition='auto')
-            fig.add_vline(x=0, line_dash="dash", line_color="black")
-            fig.update_layout(coloraxis_showscale=False)
-            st.plotly_chart(fig, use_container_width=True)
-            
-            with st.expander("Available Players vs Minutes"):
-                scope = f"Scope: **{selected_pos}**" if selected_pos != "All" else "Scope: **Full Squad**"
-                st.markdown(f"{scope} | Team: **{selected_squad}**")
-                fig_bar = px.bar(metrics, x="Age Group", y="Percentage", color="Metric", barmode="group", text_auto='.1f', height=350)
-                st.plotly_chart(fig_bar, use_container_width=True)
-        else: st.warning("No data.")
+            with c_head_2:
+                matches = current_tenure['Matches']
+                if matches > 0:
+                    w_rate = current_tenure['W'] / matches * 100
+                    d_rate = current_tenure['D'] / matches * 100
+                    l_rate = current_tenure['L'] / matches * 100
+                else:
+                    w_rate = d_rate = l_rate = 0
 
-    # --- SUB-TAB 2: TACTICAL DNA (Placeholder) ---
-    with tab_tactics:
-        st.info("Tactical Analysis Module loading...")
-        # This is where we will insert the charts for:
-        # 1. Field Tilt (Pressing Height)
-        # 2. Passing Style (Short vs Long)
-        # 3. Defensive Proactivity
+                st.markdown(f"""
+                    <div style="display: flex; justify-content: space-around; margin-top: 15px; align-items: center;">
+                        <div style="text-align:center;">
+                            <span class="stat-badge badge-w">{w_rate:.0f}%</span><br>
+                            <span class="small-label">Win Rate</span>
+                        </div>
+                        <div style="text-align:center;">
+                            <span class="stat-badge badge-d">{d_rate:.0f}%</span><br>
+                            <span class="small-label">Draw Rate</span>
+                        </div>
+                        <div style="text-align:center;">
+                            <span class="stat-badge badge-l">{l_rate:.0f}%</span><br>
+                            <span class="small-label">Loss Rate</span>
+                        </div>
+                        <div style="text-align:center;">
+                            <span class="stat-badge badge-ppm" style="font-size:1.2em;">{current_tenure['PPM']:.2f}</span><br>
+                            <span class="small-label">Points/Match</span>
+                        </div>
+                    </div>
+                """, unsafe_allow_html=True)
+            
+            # Full Width Progress Bar (Clamped)
+            st.write("")
+            calculated_share_pct = (matches / 38) * 100
+            display_share = min(calculated_share_pct, 100.0)
+            progress_val = min(calculated_share_pct / 100, 1.0)
+            
+            st.progress(progress_val, text=f"Season Share: {display_share:.1f}% ({matches} Matches)")
+
+        # --- TABS ---
+        tab_perf, tab_tactics = st.tabs(["🏆 Squad & Performance", "🧠 Tactical DNA"])
+
+        # --- SUB-TAB 1: PERFORMANCE ---
+        with tab_perf:
+            st.markdown("#### Matrix Performance (Squad Level)")
+            c1, c2 = st.columns(2)
+            with c1: st.metric("Quadrant", quadrant)
+            with c2: st.metric("Wage Efficiency", f"{fair_index:+.0f}" if fair_index != "N/A" else "N/A")
+
+            st.markdown("---")
+            
+            # --- TRUST GAP ANALYSIS ---
+            st.markdown("### The Trust Gap Analysis")
+            st.caption(f"How did {selected_manager} utilize the squad?")
+            
+            # Reverse lookup for raw squad name
+            raw_squad_name = None
+            for s in df_players['Squad'].unique():
+                if team_map.get(s, s) == selected_squad_common:
+                    raw_squad_name = s; break
+            
+            if raw_squad_name:
+                df_viz = df_players[df_players['Squad'] == raw_squad_name].copy()
+                
+                df_viz['Pos_Simple'] = df_viz['Pos'].astype(str).apply(lambda x: x.split(',')[0].strip())
+                df_viz['Age_Group'] = df_viz['Age'].apply(ap.get_age_group)
+                
+                pos_options = ["All"] + sorted(df_viz['Pos_Simple'].unique())
+                selected_pos = st.selectbox("Filter by Position", pos_options, key="pos_filter_trust")
+                
+                if selected_pos != "All": 
+                    df_viz = df_viz[df_viz['Pos_Simple'] == selected_pos]
+                
+                metrics = ap.calculate_trust_metrics(df_viz)
+
+                if not metrics.empty:
+                    gap = metrics.pivot(index="Age Group", columns="Metric", values="Percentage").reset_index()
+                    gap["Trust Gap"] = gap["Minutes Played (Players Utilization)"] - gap["Squad Depth (Available Players)"]
+                    
+                    fig = px.bar(
+                        gap, x="Trust Gap", y="Age Group", orientation='h', 
+                        text_auto='.1f', 
+                        color="Trust Gap", color_continuous_scale="RdYlGn", 
+                        range_color=[-20,20], title=f"Trust Distribution: {selected_manager}"
+                    )
+                    
+                    fig.update_traces(texttemplate='%{x:.1f}%', textposition='auto')
+                    fig.add_vline(x=0, line_dash="dash", line_color="black")
+                    fig.update_layout(coloraxis_showscale=False)
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                    with st.expander("Detailed Split (Available vs Played)"):
+                        fig_bar = px.bar(metrics, x="Age Group", y="Percentage", color="Metric", barmode="group", text_auto='.1f', height=350)
+                        st.plotly_chart(fig_bar, use_container_width=True)
+                else: 
+                    st.warning("Insufficient player data for trust analysis.")
+            else:
+                st.warning(f"Could not map '{selected_squad_common}' to player data.")
+
+        # --- SUB-TAB 2: TACTICAL DNA ---
+        with tab_tactics:
+            dt.render_manager_tactics(selected_manager)
