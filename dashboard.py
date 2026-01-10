@@ -6,6 +6,7 @@ import os
 import age_parser as ap
 import manager_matrix as mm
 import dashboard_tactics as dt
+import dashboard_volatility as dv
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="Football Manager Analytics", layout="wide")
@@ -326,6 +327,10 @@ elif st.session_state.current_view == "🕵️ Manager Profile":
             progress_val = min(calculated_share_pct / 100, 1.0)
             
             st.progress(progress_val, text=f"Season Share: {display_share:.1f}% ({matches} Matches)")
+        
+        st.markdown("---")
+        dv.render_volatility_widget(selected_manager, selected_squad_common)
+        st.markdown("---")
 
         # --- TABS ---
         tab_perf, tab_tactics = st.tabs(["🏆 Squad & Performance", "🧠 Tactical DNA"])

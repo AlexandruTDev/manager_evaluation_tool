@@ -38,7 +38,7 @@ def get_club_history_url(club_name):
         result_row = soup.select_one("table.items tbody tr td.hauptlink a[href*='/startseite/verein/']")
         
         if result_row:
-            base_href = result_row['href'] # e.g. /arsenal-fc/startseite/verein/11
+            base_href = result_row['href'] 
             # Replace 'startseite' (overview) with 'mitarbeiterhistorie' (staff history)
             history_href = base_href.replace("startseite", "mitarbeiterhistorie")
             return "https://www.transfermarkt.com" + history_href
@@ -60,18 +60,18 @@ def scrape_club_history(club_name, url):
         response = requests.get(url, headers=HEADERS)
         soup = BeautifulSoup(response.content, 'html.parser')
         
-        # [FIX] 1. Find the specific grid view div by ID (from your HTML)
+        # 1. Find the specific grid view div by ID
         grid_view = soup.find("div", id="yw1")
         if not grid_view:
             print(f"   ⚠️ Could not find grid view 'yw1' for {club_name}")
             return []
 
-        # [FIX] 2. Find the main table inside that grid
+        # 2. Find the main table inside that grid
         table = grid_view.find("table", class_="items")
         if not table:
             return []
 
-        # [FIX] 3. Find rows, but strict check for tbody
+        # 3. Find rows
         tbody = table.find("tbody")
         if not tbody:
             return []
@@ -82,11 +82,10 @@ def scrape_club_history(club_name, url):
         cutoff_date = datetime(2000, 1, 1)
         
         for row in rows:
-            # [FIX] 4. recursive=False is CRITICAL here. 
-            # It prevents finding 'td' tags inside the nested 'inline-table' in col 0.
+            # recursive=False is CRITICAL to ignore nested tables
             cols = row.find_all('td', recursive=False)
             
-            # Based on your HTML:
+            # HTML Structure:
             # Col 0: Name (Nested table)
             # Col 1: Flag
             # Col 2: Appointed
@@ -95,7 +94,7 @@ def scrape_club_history(club_name, url):
             # Col 5: Matches
             # Col 6: PPG
             
-            if len(cols) < 6: continue
+            if len(cols) < 7: continue # Need at least 7 cols for PPG
             
             # --- EXTRACT DATA ---
             
@@ -119,25 +118,28 @@ def scrape_club_history(club_name, url):
                 continue
                 
             # 3. Days in Charge (Col 4)
-            # Text is "2211 days"
             days_text = cols[4].get_text(strip=True)
             days_match = re.search(r"(\d+)", days_text)
             days = int(days_match.group(1)) if days_match else 0
             
-            # 4. Manager Name (Col 0 -> .hauptlink)
-            # We look inside Col 0 for the specific class used for names
+            # 4. PPG (Col 6) - [NEW ADDITION]
+            try:
+                ppg_text = cols[6].get_text(strip=True).replace(',', '.')
+                ppg = float(ppg_text)
+            except:
+                ppg = 0.0
+
+            # 5. Manager Name (Col 0 -> .hauptlink)
             name_link = cols[0].select_one(".hauptlink a")
-            if name_link:
-                manager_name = name_link.get_text(strip=True)
-            else:
-                manager_name = "Unknown"
+            manager_name = name_link.get_text(strip=True) if name_link else "Unknown"
             
             history_data.append({
                 "Club": club_name,
                 "Manager": manager_name,
                 "Appointed": appointed_text,
                 "Matches": matches,
-                "Days_In_Charge": days
+                "Days_In_Charge": days,
+                "PPG": ppg  # Added PPG to output
             })
             
         return history_data
@@ -148,12 +150,11 @@ def scrape_club_history(club_name, url):
 
 # --- MAIN EXECUTION ---
 if __name__ == "__main__":
-    print("--- 🏟️ CLUB VOLATILITY SCRAPER (FIXED) ---")
+    print("--- 🏟️ CLUB VOLATILITY SCRAPER (WITH PPG) ---")
     
     # 1. Get Seed List
     clubs = get_club_seed_list()
-    # [OPTIONAL] Test with first 3 clubs if you want to be safe
-    # clubs = clubs[:3] 
+    # clubs = clubs[:5] # Uncomment for testing
     print(f"Found {len(clubs)} clubs to analyze.")
     
     all_history = []
@@ -175,7 +176,7 @@ if __name__ == "__main__":
             print(f"   ✅ Found {len(club_data)} managers (post-2000, >10 matches)")
             all_history.extend(club_data)
         else:
-            print("   ⚠️ No relevant history found (check html structure or filters).")
+            print("   ⚠️ No relevant history found.")
             
         # C. Delay
         time.sleep(random.uniform(2, 4))
@@ -185,6 +186,6 @@ if __name__ == "__main__":
         os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
         df_out = pd.DataFrame(all_history)
         df_out.to_csv(OUTPUT_FILE, index=False)
-        print(f"\n✅ Success! Saved club history to {OUTPUT_FILE}")
+        print(f"\n✅ Success! Saved club history with PPG to {OUTPUT_FILE}")
     else:
         print("\n⚠️ No data extracted.")
