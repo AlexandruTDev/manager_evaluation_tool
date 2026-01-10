@@ -230,68 +230,57 @@ elif st.session_state.current_view == "🕵️ Manager Profile":
         
         # --- ID CARD SECTION ---
         with st.container(border=True):
-            # Layout: Name/Club | Stats
+            
+            # 1. SETUP: Calculate Dates & Phases
+            try:
+                if "-" in selected_season:
+                    parts = selected_season.split("-")
+                    s_year = int("20" + parts[0]) if len(parts[0]) == 2 else int(parts[0])
+                else:
+                    s_year = 2023
+            except:
+                s_year = 2023
+
+            season_start_date = pd.Timestamp(year=s_year, month=8, day=15)
+            start_str = current_tenure.get('Start_Date', '')
+            tenure_start = pd.to_datetime(start_str, dayfirst=True, errors='coerce')
+            
+            # Phase Logic
+            if pd.isna(tenure_start):
+                phase_label = "Date Unknown"
+                phase_color = "#95a5a6"
+            elif tenure_start < season_start_date:
+                end_str = current_tenure.get('End_Date', '')
+                is_present = "Present" in str(end_str)
+                if is_present:
+                    phase_label = "Full Season Charge"
+                    phase_color = "#2ecc71"
+                else:
+                    tenure_end = pd.to_datetime(end_str, dayfirst=True, errors='coerce')
+                    season_end = pd.Timestamp(year=s_year + 1, month=5, day=30)
+                    if pd.notna(tenure_end) and tenure_end < season_end:
+                        phase_label = "Dismissed Early"
+                        phase_color = "#e74c3c"
+                    else:
+                        phase_label = "Full Season Charge"
+                        phase_color = "#2ecc71"
+            else:
+                date_str = tenure_start.strftime('%b %Y')
+                phase_label = f"Appointed {date_str}"
+                phase_color = "#f39c12"
+
+            # 2. RENDER COLUMNS
             c_head_1, c_head_2 = st.columns([1.5, 2.5])
             
             with c_head_1:
                 st.markdown(f"## {selected_manager}")
                 st.markdown(f"<h4 style='color: #2c3e50; margin-top: -15px; margin-bottom: 5px;'>🛡️ {selected_squad_common}</h4>", unsafe_allow_html=True)
-                
-                # [UPDATED]: Robust Date-Based Phase Logic
-                try:
-                    # 1. Determine Season Start Year from folder name (e.g. "23-24" -> 2023)
-                    # Adjust this split logic if your folder names differ (e.g. "2023-2024")
-                    if "-" in selected_season:
-                        parts = selected_season.split("-")
-                        if len(parts[0]) == 2:
-                            season_start_year = int("20" + parts[0])
-                        else:
-                            season_start_year = int(parts[0])
-                    else:
-                        season_start_year = 2023 # Fallback
-                        
-                    # Define Season Boundaries
-                    season_start_date = pd.Timestamp(year=season_start_year, month=8, day=15) # Mid-August
-                    season_end_date = pd.Timestamp(year=season_start_year + 1, month=5, day=1) # May 1st
-                    
-                    # 2. Parse Tenure Dates
-                    start_str = current_tenure.get('Start_Date', '')
-                    end_str = current_tenure.get('End_Date', '')
-                    
-                    # Clean strings (handle typos or formats)
-                    tenure_start = pd.to_datetime(start_str, dayfirst=True, errors='coerce')
-                    
-                    # Logic Tree
-                    if pd.isna(tenure_start):
-                        phase_label = "Unknown Phase"
-                    elif tenure_start < season_start_date:
-                        # They started BEFORE the season cutoff (Incumbent)
-                        
-                        # Did they finish the season?
-                        is_finished = False
-                        if "Present" in end_str:
-                            is_finished = True
-                        else:
-                            tenure_end = pd.to_datetime(end_str, dayfirst=True, errors='coerce')
-                            if pd.notna(tenure_end) and tenure_end > season_end_date:
-                                is_finished = True
-                                
-                        if is_finished:
-                            phase_label = "Full Season Charge"
-                        else:
-                            phase_label = "Dismissed Before Season End"
-                    else:
-                        # They started AFTER season began
-                        phase_label = "Mid-Season Takeover"
-                        
-                except Exception as e:
-                    phase_label = "Phase Calculation Error"
-                    # print(e) # Debug if needed
-
-                st.caption(f"Phase: **{phase_label}**")
             
             with c_head_2:
+                # 1. Get Season Stats
                 matches = current_tenure['Matches']
+                current_ppm = current_tenure['PPM']
+                
                 if matches > 0:
                     w_rate = current_tenure['W'] / matches * 100
                     d_rate = current_tenure['D'] / matches * 100
@@ -299,35 +288,109 @@ elif st.session_state.current_view == "🕵️ Manager Profile":
                 else:
                     w_rate = d_rate = l_rate = 0
 
+                # 2. [NEW] Get Career Context via Volatility Module
+                # We reuse the cached loader from your volatility module
+                club_df, mgr_df = dv.load_history_data()
+                
+                ppm_context_html = "" # Default empty
+                
+                if mgr_df is not None:
+                    # Look up the selected manager
+                    mgr_row = mgr_df[mgr_df['Manager'] == selected_manager]
+                    if not mgr_row.empty:
+
+                        try:
+                            career_ppg = float(mgr_row.iloc[0]['Career_PPG'])
+                        except:
+                            career_ppg = 0.0
+                        
+                        # Only show delta if valid data exists
+                        if pd.notna(career_ppg) and career_ppg > 0:
+                            diff = current_ppm - career_ppg
+                            
+                            # Determine Color & Arrow
+                            if diff >= 0:
+                                color = "#27ae60" # Green
+                                arrow = "▲"
+                            else:
+                                color = "#e74c3c" # Red
+                                arrow = "▼"
+                            
+                            # Create the mini comparative line
+                            ppm_context_html = f"<span style='display: block; font-size: 0.75em; font-weight: bold; color: {color}; margin-top: 2px; margin-bottom: 2px;'>{arrow} {diff:+.2f} <span style='color: #95a5a6; font-weight: normal;'>vs Career</span></span>"
+                
+                # 3. Render Badges (Split Columns Strategy)
+            # ---------------------------------------------------------
+            b1, b2, b3, b4 = st.columns(4)
+
+            with b1:
                 st.markdown(f"""
-                    <div style="display: flex; justify-content: space-around; margin-top: 15px; align-items: center;">
-                        <div style="text-align:center;">
-                            <span class="stat-badge badge-w">{w_rate:.0f}%</span><br>
-                            <span class="small-label">Win Rate</span>
-                        </div>
-                        <div style="text-align:center;">
-                            <span class="stat-badge badge-d">{d_rate:.0f}%</span><br>
-                            <span class="small-label">Draw Rate</span>
-                        </div>
-                        <div style="text-align:center;">
-                            <span class="stat-badge badge-l">{l_rate:.0f}%</span><br>
-                            <span class="small-label">Loss Rate</span>
-                        </div>
-                        <div style="text-align:center;">
-                            <span class="stat-badge badge-ppm" style="font-size:1.2em;">{current_tenure['PPM']:.2f}</span><br>
-                            <span class="small-label">Points/Match</span>
-                        </div>
+                    <div style="text-align:center;">
+                        <span class="stat-badge badge-w">{w_rate:.0f}%</span><br>
+                        <span class="small-label">Win Rate</span>
                     </div>
                 """, unsafe_allow_html=True)
-            
-            # Full Width Progress Bar (Clamped)
+
+            with b2:
+                st.markdown(f"""
+                    <div style="text-align:center;">
+                        <span class="stat-badge badge-d">{d_rate:.0f}%</span><br>
+                        <span class="small-label">Draw Rate</span>
+                    </div>
+                """, unsafe_allow_html=True)
+
+            with b3:
+                st.markdown(f"""
+                    <div style="text-align:center;">
+                        <span class="stat-badge badge-l">{l_rate:.0f}%</span><br>
+                        <span class="small-label">Loss Rate</span>
+                    </div>
+                """, unsafe_allow_html=True)
+
+            with b4:
+                # Calculate Delta Logic Isolated Here
+                delta_html = "" # Default empty
+                
+                # Re-load data just for this check (Cached, so it's fast)
+                club_df, mgr_df = dv.load_history_data()
+                
+                if mgr_df is not None:
+                    mgr_row = mgr_df[mgr_df['Manager'] == selected_manager]
+                    if not mgr_row.empty:
+                        try:
+                            career_ppg = float(mgr_row.iloc[0]['Career_PPG'])
+                            if career_ppg > 0:
+                                diff = current_ppm - career_ppg
+                                color = "#27ae60" if diff >= 0 else "#e74c3c"
+                                arrow = "▲" if diff >= 0 else "▼"
+                                # Simple, self-contained HTML string
+                                delta_html = f"<div style='color: {color}; font-weight: bold; font-size: 0.8em; margin-top: 2px;'>{arrow} {diff:+.2f} <span style='color: #999; font-weight: normal;'>vs Career</span></div>"
+                        except:
+                            pass
+
+                # Render PPM Badge + Delta
+                st.markdown(f"""
+                    <div style="text-align:center;">
+                        <span class="stat-badge badge-ppm" style="font-size:1.2em;">{current_ppm:.2f}</span>
+                        {delta_html}
+                        <span class="small-label">Points/Match</span>
+                    </div>
+                """, unsafe_allow_html=True)
+
+            # Phase Badge 
+            st.markdown(f"""
+                <div style="margin-top: 15px; margin-bottom: 5px;">
+                    <span style='background-color: {phase_color}20; color: {phase_color}; border: 1px solid {phase_color}; padding: 3px 8px; border-radius: 4px; font-weight: bold; font-size: 0.85em;'>
+                        {phase_label}
+                    </span>
+                </div>
+            """, unsafe_allow_html=True)
+
+            # Progress Bar (Stays the same)
             st.write("")
-            calculated_share_pct = (matches / 38) * 100
-            display_share = min(calculated_share_pct, 100.0)
-            progress_val = min(calculated_share_pct / 100, 1.0)
-            
-            st.progress(progress_val, text=f"Season Share: {display_share:.1f}% ({matches} Matches)")
-        
+            progress_val = min(matches / 38.0, 1.0)
+            st.progress(progress_val, text=f"Matches in Charge: **{matches}**")
+
         st.markdown("---")
         dv.render_volatility_widget(selected_manager, selected_squad_common)
         st.markdown("---")

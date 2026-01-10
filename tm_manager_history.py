@@ -6,6 +6,7 @@ import random
 import re
 import os
 import numpy as np
+# No 'json' import needed, using native str() for clean CSV output
 
 # --- CONFIGURATION ---
 DATA_DIRS = ["data/raw/23-24", "data/raw/24-25"]
@@ -22,6 +23,7 @@ def get_manager_seed_list():
         path = os.path.join(d, "manager_tenure.csv")
         if os.path.exists(path):
             df = pd.read_csv(path)
+            # Filter for established managers (>10 matches)
             qualified = df[df['Matches'] > 10]['Manager'].unique()
             managers.update(qualified)
     return sorted(list(managers))
@@ -41,9 +43,7 @@ def get_transfermarkt_url(manager_name):
     return None
 
 def get_profile_value(soup, label_pattern):
-    """Extracts Bio Data from the 'Personal Details' box."""
     try:
-        # Based on your HTML: <table class="auflistung"> ... <th>Label</th> <td>Value</td>
         target_th = soup.find("th", string=re.compile(label_pattern, re.IGNORECASE))
         if target_th:
             td = target_th.find_next_sibling("td")
@@ -53,88 +53,127 @@ def get_profile_value(soup, label_pattern):
         pass
     return np.nan
 
+def scrape_trophies_detailed(profile_url):
+    """
+    Scrapes trophies by anchoring on '.erfolg_table_saison'.
+    Returns: (Count, Python_String_List)
+    """
+    try:
+        success_url = profile_url.replace("/profil/", "/erfolge/")
+        response = requests.get(success_url, headers=HEADERS)
+        if response.status_code != 200: return 0, "[]"
+        
+        soup = BeautifulSoup(response.content, 'html.parser')
+        boxes = soup.select("div.box")
+        
+        trophy_list = []
+        total_trophies = 0
+        
+        for box in boxes:
+            # 1. Validation: Must have a success image to be a trophy box
+            if not box.select_one(".erfolg_bild_box"):
+                continue
+                
+            # 2. Extract Name & Count from Header
+            header = box.select_one(".content-box-headline")
+            if not header: continue
+            
+            header_text = header.get_text(strip=True)
+            
+            count = 1
+            name = header_text
+            
+            # Regex for "2x Title" vs "1x Title"
+            match = re.search(r"^(\d+)x\s+(.*)", header_text)
+            if match:
+                count = int(match.group(1))
+                name = match.group(2)
+            else:
+                match_1x = re.search(r"^1x\s+(.*)", header_text)
+                if match_1x:
+                    name = match_1x.group(1)
+
+            total_trophies += count
+            
+            # 3. Extract Details (The Fix)
+            # Instead of looking for tables/classes, find the Season Cells directly
+            wins = []
+            
+            # Find all cells with class 'erfolg_table_saison' inside this box
+            season_cells = box.select(".erfolg_table_saison")
+            
+            for cell in season_cells:
+                # 3a. Get Season
+                season = cell.get_text(strip=True)
+                
+                # 3b. Get Club (It's in the same row)
+                parent_row = cell.find_parent("tr")
+                if parent_row:
+                    cols = parent_row.find_all("td")
+                    # Club is usually the last column
+                    if cols:
+                        club = cols[-1].get_text(strip=True)
+                        wins.append({"season": season, "club": club})
+            
+            trophy_list.append({
+                "name": name,
+                "count": count,
+                "wins": wins
+            })
+            
+        # Return as simple string representation (Single Quotes)
+        # e.g., "[{'name': 'Title', ...}]"
+        return total_trophies, str(trophy_list)
+
+    except Exception as e:
+        print(f"Error scraping trophies: {e}")
+        return 0, "[]"
+
 def parse_career_history(soup):
-    """
-    Parses the history table (id='yw2').
-    - Separates 'Club' and 'Role' using stripped_strings.
-    - Strict 'Manager' role check.
-    - Excludes U23/Youth teams.
-    """
     total_matches = 0
     weighted_points = 0
     
-    # [FIX] Target the specific history grid by ID from your HTML
+    # Target history grid by ID (yw2 usually)
     history_grid = soup.find("div", id="yw2")
-    if not history_grid:
-        return 0, 0.0
-
-    table = history_grid.find("table", class_="items")
-    if not table:
-        return 0, 0.0
-
-    # Iterate through rows in tbody
-    rows = table.select("tbody tr")
+    if not history_grid: return 0, 0.0
     
+    table = history_grid.find("table", class_="items")
+    if not table: return 0, 0.0
+    
+    rows = table.select("tbody tr")
     for row in rows:
         cols = row.find_all("td")
+        if len(cols) < 6: continue
         
-        # [FIX] Ignore 'colspan' rows (e.g. "Assistant Manager of...")
-        # Your HTML shows these have fewer columns or a colspan attribute
-        if len(cols) < 6: 
-            continue
-
-        # --- COLUMN 1: Club & Role ---
-        # The HTML is: <td class="hauptlink"> <a...>Club</a> <br> Role </td>
-        # .stripped_strings yields a generator: ["Chelsea", "Manager"]
+        # Extract Club & Role
         cell_strings = list(cols[1].stripped_strings)
+        if len(cell_strings) < 2: continue
         
-        if len(cell_strings) < 2:
-            continue # Needs at least Club and Role
-
-        club_name = cell_strings[0] # e.g., "Chelsea"
-        role_name = cell_strings[-1] # e.g., "Manager" (taking the last element is safest)
-
-        # --- FILTER 1: SENIOR CLUBS ONLY ---
-        # Maresca had "Man City U23". We exclude this.
-        if any(x in club_name for x in ["U23", "U21", "U19", "U18", "Youth", "Reserve", "Primavera"]):
-            continue
-
-        # --- FILTER 2: STRICT MANAGER ROLE ---
-        # Must be exactly "Manager". 
-        # This excludes "Assistant Manager", "Technical Coach", etc.
-        if role_name != "Manager":
-            continue
-
-        # --- EXTRACT DATA ---
+        club_name = cell_strings[0]
+        role_name = cell_strings[-1]
+        
+        # Filters
+        if any(x in club_name for x in ["U23", "U21", "U19", "U18", "Youth", "Reserve", "Primavera"]): continue
+        if role_name != "Manager": continue
+        
+        # Stats
         try:
-            # Based on your HTML structure:
-            # Col 4 (Index 4): Matches (e.g. "92")
-            # Col 5 (Index 5): PPM (e.g. "1.97")
-            
             matches_text = cols[4].get_text(strip=True)
-            ppm_text = cols[5].get_text(strip=True).replace(',', '.')
+            ppg_text = cols[5].get_text(strip=True).replace(',', '.')
             
-            # Clean matches (remove non-digits if any)
-            if matches_text.replace('.', '').isdigit():
-                matches = int(float(matches_text))
-            else:
-                matches = 0
-                
-            # Clean PPM
-            if ppm_text.replace('.', '', 1).isdigit():
-                ppm = float(ppm_text)
-            else:
-                ppm = 0.0
+            if matches_text.replace('.', '').isdigit(): matches = int(float(matches_text))
+            else: matches = 0
+            
+            if ppg_text.replace('.', '', 1).isdigit(): ppg = float(ppg_text)
+            else: ppg = 0.0
             
             if matches > 0:
                 total_matches += matches
-                weighted_points += (matches * ppm)
-                
-        except Exception:
-            continue
+                weighted_points += (matches * ppg)
+        except: continue
             
-    career_ppm = round(weighted_points / total_matches, 2) if total_matches > 0 else 0.0
-    return total_matches, career_ppm
+    career_ppg = round(weighted_points / total_matches, 2) if total_matches > 0 else 0.0
+    return total_matches, career_ppg
 
 def scrape_manager_profile(manager_name, url):
     try:
@@ -149,10 +188,12 @@ def scrape_manager_profile(manager_name, url):
             "Agent": np.nan,
             "Contract_Until": np.nan,
             "Total_Matches": 0,
-            "Career_PPM": 0.0
+            "Career_PPG": 0.0,
+            "Trophies_Total": 0,
+            "Trophies_JSON": "[]"
         }
         
-        # 1. Header Bio Data (Personal Details Box)
+        # Bio
         raw_age = get_profile_value(soup, r"Date of birth/Age")
         if raw_age:
             match = re.search(r"\((\d+)\)", str(raw_age))
@@ -168,10 +209,16 @@ def scrape_manager_profile(manager_name, url):
         data["Agent"] = get_profile_value(soup, r"Agent")
         data["Contract_Until"] = get_profile_value(soup, r"Contract until")
         
-        # 2. Career History (Using ID yw2)
-        matches, ppm = parse_career_history(soup)
+        # Stats
+        matches, ppg = parse_career_history(soup)
         data["Total_Matches"] = matches
-        data["Career_PPM"] = ppm
+        data["Career_PPG"] = ppg
+
+        # Trophies
+        time.sleep(1) # Be polite
+        count, details_str = scrape_trophies_detailed(url)
+        data["Trophies_Total"] = count
+        data["Trophies_JSON"] = details_str
 
         return data
 
@@ -179,11 +226,10 @@ def scrape_manager_profile(manager_name, url):
         print(f"   ❌ Error scraping {manager_name}: {e}")
         return None
 
-# --- MAIN EXECUTION ---
 if __name__ == "__main__":
-    print("--- 🕵️ MANAGER VOLATILITY SCRAPER (V6 - HTML ALIGNED) ---")
+    print("--- 🕵️ MANAGER VOLATILITY & TROPHIES SCRAPER (v9 FIXED) ---")
     managers = get_manager_seed_list()
-    # managers = managers[:5] # Test Mode
+    # managers = managers[:5] # Comment out for full run
     
     results = []
     for i, name in enumerate(managers):
@@ -192,14 +238,11 @@ if __name__ == "__main__":
         if url:
             profile = scrape_manager_profile(name, url)
             if profile:
-                print(f"   ✅ {name}: {profile['Total_Matches']} Matches | {profile['Career_PPM']} PPM")
+                print(f"   ✅ {name}: {profile['Total_Matches']} Matches | {profile['Trophies_Total']} Trophies")
                 results.append(profile)
         time.sleep(random.uniform(2, 4))
         
     if results:
         os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
-        df_out = pd.DataFrame(results)
-        df_out.to_csv(OUTPUT_FILE, index=False)
-        print(f"\n✅ Success! Saved HTML-aligned profiles to {OUTPUT_FILE}")
-    else:
-        print("\n⚠️ No data extracted.")
+        pd.DataFrame(results).to_csv(OUTPUT_FILE, index=False)
+        print(f"\n✅ Success! Saved detailed profiles to {OUTPUT_FILE}")
