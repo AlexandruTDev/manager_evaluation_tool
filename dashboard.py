@@ -389,4 +389,4 @@ elif st.session_state.current_view == "🕵️ Manager Profile":
 
         # --- SUB-TAB 2: TACTICAL DNA ---
         with tab_tactics:
-            dt.render_manager_tactics(selected_manager)
+            dt.render_manager_tactics(selected_manager, current_season=selected_season)
