@@ -8,13 +8,44 @@ import re
 # --- CONFIGURATION ---
 SEASON_YEAR = "2024"
 OUTPUT_DIR = os.path.join("data", "raw", "24-25")
-OUTPUT_FILE = os.path.join(OUTPUT_DIR, "manager_tenure.csv")
+OUTPUT_FILE = os.path.join(OUTPUT_DIR, "manager_tenure_ligue_1.csv")
 
 # SET TO NONE TO SCRAPE ALL TEAMS
 # SET TO INT (e.g., 3) TO TEST WITH FIRST N TEAMS
 TEST_LIMIT = None 
 
 # Manual Map of Transfermarkt Club IDs for PL
+
+# Season 2024-25 Ligue 1 Clubs
+TM_IDS = {
+    "Strasbourg": 667,
+    "PSG": 583,
+    "Monaco": 162,
+    "Marseille": 244,
+    "Lille": 1082,
+    "Lyon": 1041
+}
+
+"""# Season 2023-24 EFL Championship Clubs
+TM_IDS = {
+    "Hull City": 3008,
+    "Burnley": 1132,
+    "Sheffield Utd": 350,
+    "Luton Town": 1031,
+    "Middlesbrough": 641,
+    "Sunderland": 289
+}
+
+# Season 2022-23 EFL Championship Clubs
+TM_IDS = {
+    "Hull City": 3008,
+    "Burnley": 1132,
+    "Sheffield Utd": 350,
+    "Luton Town": 1031,
+    "Middlesbrough": 641,
+    "Sunderland": 289
+}
+
 # Season 2024-25
 TM_IDS = {
     "Leicester": 1003,
@@ -40,7 +71,7 @@ TM_IDS = {
 }
 
 # Season 2023-24
-"""TM_IDS = {
+TM_IDS = {
     "Arsenal": 11,
     "Aston Villa": 405,
     "Bournemouth": 989,
